@@ -69,15 +69,17 @@ export default function FolderPage() {
     setError(null)
 
     const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser()
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession()
 
-    if (userError) {
-      setError(userError.message)
+    if (sessionError) {
+      setError(sessionError.message)
       setLoading(false)
       return
     }
+
+    const user = session?.user
 
     if (!user) {
       router.push("/auth/login")
