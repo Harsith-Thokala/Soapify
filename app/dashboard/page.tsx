@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { FolderCard } from "@/components/folder-card"
+import { DocumentCard } from "@/components/document-card"
 import { CreateFolderModal } from "@/components/create-folder-modal"
+import { MoveDocumentDialog } from "@/components/move-document-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
@@ -47,7 +49,7 @@ interface Folder {
 
 interface Note {
   id: string
-  name: string
+  title: string
   folderId?: string
   lastUpdated: string
   updatedAt: string
@@ -66,7 +68,7 @@ export default function DashboardPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [creatingDocument, setCreatingDocument] = useState(false)
+  const [movingDocument, setMovingDocument] = useState<string | null>(null)
 
   useEffect(() => {
     setIsMounted(true)
@@ -119,7 +121,7 @@ export default function DashboardPage() {
         const updated = doc.updated_at ?? doc.created_at
         return {
           id: doc.id,
-          name: doc.title ?? "Untitled Note",
+          title: doc.title ?? "Untitled Note",
           folderId: doc.folder_id ?? undefined,
           updatedAt: updated ?? new Date().toISOString(),
           lastUpdated: formatTimeAgo(updated),
@@ -184,41 +186,58 @@ export default function DashboardPage() {
     if (!userId) return
     setLoadError(null)
 
-    const { error } = await supabase.from("folders").delete().eq("id", id).eq("user_id", userId)
-    if (error) {
-      setLoadError(error.message)
+    const { error: docsError } = await supabase.from("documents").delete().eq("folder_id", id).eq("user_id", userId)
+    if (docsError) {
+      setLoadError(docsError.message)
+      return
+    }
+
+    const { error: folderError } = await supabase.from("folders").delete().eq("id", id).eq("user_id", userId)
+    if (folderError) {
+      setLoadError(folderError.message)
       return
     }
     await loadData()
   }
 
-  const handleCreateDocument = async (folderId?: string) => {
-    if (!userId) {
-      setLoadError("You must be signed in to create documents.")
-      return
-    }
-    setCreatingDocument(true)
+  const startNewDocument = (folderId?: string) => {
+    const target = folderId ? `/dashboard/editor?folder=${folderId}` : "/dashboard/editor"
+    router.push(target)
+  }
+
+  const handleMoveDocument = async (documentId: string, folderId: string | null) => {
+    if (!userId) return
     setLoadError(null)
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("documents")
-      .insert({
-        user_id: userId,
-        folder_id: folderId ?? null,
-        title: "Untitled Note",
-        content: {},
-      })
-      .select("id")
-      .single()
+      .update({ folder_id: folderId })
+      .eq("id", documentId)
+      .eq("user_id", userId)
 
-    if (error || !data) {
-      setLoadError(error?.message ?? "Unable to create document.")
-      setCreatingDocument(false)
+    if (error) {
+      setLoadError(error.message)
       return
     }
 
-    setCreatingDocument(false)
-    router.push(`/dashboard/editor?doc=${data.id}`)
+    setMovingDocument(null)
+    await loadData()
+  }
+
+  const handleViewDocument = (id: string) => {
+    router.push(`/dashboard/editor?doc=${id}`)
+  }
+
+  const handleDeleteDocument = async (id: string) => {
+    if (!userId) return
+    setLoadError(null)
+
+    const { error } = await supabase.from("documents").delete().eq("id", id).eq("user_id", userId)
+    if (error) {
+      setLoadError(error.message)
+      return
+    }
+    await loadData()
   }
 
   const foldersTabFiltered = useMemo(() => {
@@ -234,13 +253,33 @@ export default function DashboardPage() {
     return [...list].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
   }, [folders, folderQuery])
 
+  const quickMoveFolders = useMemo(
+    () => folders.map((folder) => ({ id: folder.id, name: folder.name })).sort((a, b) => a.name.localeCompare(b.name)),
+    [folders],
+  )
+
+  const documentsWithoutFolder = useMemo(() => documents.filter((doc) => !doc.folderId), [documents])
+
+  const movingDocumentData = useMemo(
+    () => (movingDocument ? documents.find((doc) => doc.id === movingDocument) ?? null : null),
+    [documents, movingDocument],
+  )
+
   const documentsTabFiltered = useMemo(() => {
     const query = documentQuery.trim().toLowerCase()
     const list = !query
-      ? documents
-      : documents.filter((doc) => doc.name.toLowerCase().includes(query) || doc.lastUpdated.toLowerCase().includes(query))
+      ? documentsWithoutFolder
+      : documentsWithoutFolder.filter((doc) => doc.title.toLowerCase().includes(query) || doc.lastUpdated.toLowerCase().includes(query))
     return [...list].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-  }, [documents, documentQuery])
+  }, [documentsWithoutFolder, documentQuery])
+
+  const overviewDocuments = useMemo(() => {
+    const query = dashboardQuery.trim().toLowerCase()
+    const list = !query
+      ? documentsWithoutFolder
+      : documentsWithoutFolder.filter((doc) => doc.title.toLowerCase().includes(query) || doc.lastUpdated.toLowerCase().includes(query))
+    return [...list].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+  }, [documentsWithoutFolder, dashboardQuery])
 
   return (
     !isMounted ? (
@@ -321,7 +360,7 @@ export default function DashboardPage() {
                     key={folder.id}
                     folder={folder}
                     onDelete={handleDeleteFolder}
-                    onCreateNote={(id) => handleCreateDocument(id)}
+                    onCreateNote={(id) => startNewDocument(id)}
                     viewMode="grid"
                   />
                   ))}
@@ -334,34 +373,26 @@ export default function DashboardPage() {
             <section className="space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-foreground">Documents</h2>
-                {documentsTabFiltered.length > 0 && (
+                {overviewDocuments.length > 0 && (
                   <Button variant="link" className="px-0 text-primary" onClick={() => setActiveTab("documents")}>
                     View all documents
                   </Button>
                 )}
               </div>
-              {documentsTabFiltered.length === 0 ? (
+              {overviewDocuments.length === 0 ? (
                 <Card className="bg-card border border-dashed border-border p-6 text-center space-y-2 text-muted-foreground">
                   No documents yet. Use the SOAP generator to create your first note.
                 </Card>
               ) : (
                 <div className="space-y-2">
-                  {documentsTabFiltered.slice(0, 5).map((note) => (
-                    <Link key={note.id} href="/dashboard/editor">
-                      <Card className="p-4 bg-card border border-border hover:border-primary hover:shadow-md transition-all cursor-pointer">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                            <FileText className="w-5 h-5 text-primary" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h3 className="font-medium text-foreground truncate hover:text-primary transition-colors">
-                              {note.name}
-                            </h3>
-                            <p className="text-sm text-muted-foreground">Updated {note.lastUpdated}</p>
-                          </div>
-                        </div>
-                      </Card>
-                    </Link>
+                  {overviewDocuments.slice(0, 5).map((note) => (
+                    <DocumentCard
+                      key={note.id}
+                      document={{ id: note.id, title: note.title, lastUpdated: note.lastUpdated }}
+                      onView={handleViewDocument}
+                      onDelete={handleDeleteDocument}
+                      onMove={quickMoveFolders.length ? (id) => setMovingDocument(id) : undefined}
+                    />
                   ))}
                 </div>
               )}
@@ -408,7 +439,7 @@ export default function DashboardPage() {
                   key={folder.id}
                   folder={folder}
                   onDelete={handleDeleteFolder}
-                  onCreateNote={(id) => handleCreateDocument(id)}
+                  onCreateNote={(id) => startNewDocument(id)}
                   viewMode="grid"
                 />
               ))}
@@ -427,13 +458,9 @@ export default function DashboardPage() {
                 className="pl-9 bg-input border-border text-foreground"
               />
             </div>
-            <Button
-              className="bg-primary hover:bg-primary/90 text-primary-foreground"
-              onClick={() => handleCreateDocument()}
-              disabled={creatingDocument}
-            >
+            <Button className="bg-primary hover:bg-primary/90 text-primary-foreground" onClick={() => startNewDocument()}>
               <Files className="w-4 h-4 mr-2" />
-              {creatingDocument ? "Creating..." : "New Document"}
+              New Document
             </Button>
           </div>
 
@@ -445,35 +472,40 @@ export default function DashboardPage() {
             <Card className="bg-card border border-dashed border-border p-8 text-center space-y-3">
               <FileText className="w-8 h-8 mx-auto text-muted-foreground" />
               <p className="text-muted-foreground">No SOAP documents yet. Generate your first note to see it listed here.</p>
-              <Button
-                className="bg-primary hover:bg-primary/90 text-primary-foreground"
-                onClick={() => handleCreateDocument()}
-                disabled={creatingDocument}
-              >
-                {creatingDocument ? "Creating..." : "Create a new note"}
+              <Button className="bg-primary hover:bg-primary/90 text-primary-foreground" onClick={() => startNewDocument()}>
+                Create a new note
               </Button>
             </Card>
           ) : (
             <div className="space-y-2">
               {documentsTabFiltered.map((note) => (
-                <Link key={note.id} href="/dashboard/editor">
-                  <Card className="p-4 bg-card border border-border hover:border-primary hover:shadow-md transition-all cursor-pointer">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                        <FileText className="w-5 h-5 text-primary" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-medium text-foreground truncate hover:text-primary transition-colors">{note.name}</h3>
-                        <p className="text-sm text-muted-foreground">Updated {note.lastUpdated}</p>
-                      </div>
-                    </div>
-                  </Card>
-                </Link>
+                <DocumentCard
+                  key={note.id}
+                  document={{ id: note.id, title: note.title, lastUpdated: note.lastUpdated }}
+                  onView={handleViewDocument}
+                  onDelete={handleDeleteDocument}
+                  onMove={quickMoveFolders.length ? (id) => setMovingDocument(id) : undefined}
+                />
               ))}
             </div>
           )}
         </TabsContent>
       </Tabs>
+
+      <MoveDocumentDialog
+        open={Boolean(movingDocument)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMovingDocument(null)
+          }
+        }}
+        folders={quickMoveFolders}
+        documentTitle={movingDocumentData?.title ?? null}
+        onMove={(folderId) => {
+          if (!movingDocument) return
+          void handleMoveDocument(movingDocument, folderId)
+        }}
+      />
 
       <CreateFolderModal open={showCreateModal} onOpenChange={setShowCreateModal} onCreate={handleCreateFolder} />
     </div>

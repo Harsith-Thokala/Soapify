@@ -31,7 +31,7 @@ export async function POST(request: Request) {
           {
             role: "system",
             content:
-              "You are a clinical documentation assistant. Extract key details from the provided note or transcript and return a JSON object with the keys subjective, objective, assessment, and plan. Each value should be a concise paragraph in plain text. Do not include any additional keys.",
+              "You are a clinical documentation assistant. Extract key details from the provided note or transcript and return a JSON object with the keys subjective, objective, assessment, and plan. If any portion is missing, infer reasonable clinical content based on the information provided and standard of care (especially ensure the plan delivers concrete next steps). Each value must be a concise paragraph in plain text. Do not include any additional keys.",
           },
           {
             role: "user",

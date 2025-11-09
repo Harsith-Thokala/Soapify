@@ -3,10 +3,11 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { Button } from "@/components/ui/button"
-import { LayoutDashboard, Settings, Heart, Plus } from "lucide-react"
+import { LayoutDashboard, Settings, Heart, Plus, MessageCircle } from "lucide-react"
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard", href: "/dashboard" },
+  { icon: MessageCircle, label: "Assistant", href: "/dashboard/chatbot" },
 ]
 
 const settingsItems = [{ icon: Settings, label: "Settings", href: "/dashboard/settings" }]

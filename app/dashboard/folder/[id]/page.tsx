@@ -8,6 +8,8 @@ import { Plus, Search, ArrowLeft } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { useParams, useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
+import { DocumentCard } from "@/components/document-card"
+import { MoveDocumentDialog } from "@/components/move-document-dialog"
 
 interface Folder {
   id: string
@@ -22,6 +24,7 @@ interface Note {
   title: string
   updatedAt: string
   createdAt: string
+  lastUpdated: string
 }
 
 const formatTimeAgo = (input?: string | null) => {
@@ -54,10 +57,11 @@ export default function FolderPage() {
 
   const [folder, setFolder] = useState<Folder | null>(null)
   const [notes, setNotes] = useState<Note[]>([])
+  const [folders, setFolders] = useState<{ id: string; name: string }[]>([])
+  const [movingDocument, setMovingDocument] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [creatingNote, setCreatingNote] = useState(false)
 
   const loadFolder = useCallback(async () => {
     if (!folderId) return
@@ -81,12 +85,27 @@ export default function FolderPage() {
       return
     }
 
-    const { data: folderData, error: folderError } = await supabase
-      .from("folders")
-      .select("id, name, description, created_at, updated_at")
-      .eq("id", folderId)
-      .eq("user_id", user.id)
-      .single()
+    const [folderResponse, docsResponse, foldersResponse] = await Promise.all([
+      supabase
+        .from("folders")
+        .select("id, name, description, created_at, updated_at")
+        .eq("id", folderId)
+        .eq("user_id", user.id)
+        .single(),
+      supabase
+        .from("documents")
+        .select("id, title, created_at, updated_at")
+        .eq("user_id", user.id)
+        .eq("folder_id", folderId)
+        .order("updated_at", { ascending: false }),
+      supabase
+        .from("folders")
+        .select("id, name")
+        .eq("user_id", user.id)
+        .order("name", { ascending: true }),
+    ])
+
+    const { data: folderData, error: folderError } = folderResponse
 
     if (folderError || !folderData) {
       setError(folderError?.message ?? "Folder not found.")
@@ -94,18 +113,30 @@ export default function FolderPage() {
       return
     }
 
-    const { data: docsData, error: docsError } = await supabase
-      .from("documents")
-      .select("id, title, created_at, updated_at")
-      .eq("user_id", user.id)
-      .eq("folder_id", folderId)
-      .order("updated_at", { ascending: false })
+    const { data: docsData, error: docsError } = docsResponse
 
     if (docsError) {
       setError(docsError.message)
       setLoading(false)
       return
     }
+
+    const { data: allFoldersData, error: allFoldersError } = foldersResponse
+
+    if (allFoldersError) {
+      setError(allFoldersError.message)
+      setLoading(false)
+      return
+    }
+
+    const formattedNotes =
+      docsData?.map((doc) => ({
+        id: doc.id,
+        title: doc.title ?? "Untitled Note",
+        createdAt: doc.created_at ?? new Date().toISOString(),
+        updatedAt: doc.updated_at ?? doc.created_at ?? new Date().toISOString(),
+        lastUpdated: formatTimeAgo(doc.updated_at ?? doc.created_at),
+      })) ?? []
 
     setFolder({
       id: folderData.id,
@@ -115,15 +146,8 @@ export default function FolderPage() {
       updatedAt: folderData.updated_at ?? folderData.created_at,
     })
 
-    const formattedNotes =
-      docsData?.map((doc) => ({
-        id: doc.id,
-        title: doc.title ?? "Untitled Note",
-        createdAt: doc.created_at ?? new Date().toISOString(),
-        updatedAt: doc.updated_at ?? doc.created_at ?? new Date().toISOString(),
-      })) ?? []
-
     setNotes(formattedNotes)
+    setFolders(allFoldersData ?? [])
     setLoading(false)
   }, [folderId, router])
 
@@ -131,47 +155,34 @@ export default function FolderPage() {
     void loadFolder()
   }, [loadFolder])
 
-  const handleCreateNote = async () => {
+  const handleCreateNote = () => {
     if (!folderId) return
-    setCreatingNote(true)
+    router.push(`/dashboard/editor?folder=${folderId}`)
+  }
+
+  const handleViewDocument = (id: string) => {
+    router.push(`/dashboard/editor?doc=${id}`)
+  }
+
+  const handleDeleteDocument = async (id: string) => {
     setError(null)
-
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser()
-
-    if (userError) {
-      setError(userError.message)
-      setCreatingNote(false)
+    const { error: deleteError } = await supabase.from("documents").delete().eq("id", id)
+    if (deleteError) {
+      setError(deleteError.message)
       return
     }
+    await loadFolder()
+  }
 
-    if (!user) {
-      router.push("/auth/login")
-      setCreatingNote(false)
+  const handleMoveDocument = async (id: string, destination: string | null) => {
+    setError(null)
+    const { error: updateError } = await supabase.from("documents").update({ folder_id: destination }).eq("id", id)
+    if (updateError) {
+      setError(updateError.message)
       return
     }
-
-    const { data, error: insertError } = await supabase
-      .from("documents")
-      .insert({
-        user_id: user.id,
-        folder_id: folderId,
-        title: "Untitled Note",
-        content: {},
-      })
-      .select("id")
-      .single()
-
-    if (insertError || !data) {
-      setError(insertError?.message ?? "Unable to create note.")
-      setCreatingNote(false)
-      return
-    }
-
-    setCreatingNote(false)
-    router.push(`/dashboard/editor?doc=${data.id}`)
+    setMovingDocument(null)
+    await loadFolder()
   }
 
   const filteredNotes = useMemo(() => {
@@ -179,6 +190,16 @@ export default function FolderPage() {
     const query = searchQuery.toLowerCase()
     return notes.filter((note) => note.title.toLowerCase().includes(query))
   }, [notes, searchQuery])
+
+  const quickMoveFolders = useMemo(
+    () => folders.filter((folder) => folder.id !== folderId).sort((a, b) => a.name.localeCompare(b.name)),
+    [folders, folderId],
+  )
+
+  const movingDocumentData = useMemo(
+    () => (movingDocument ? notes.find((note) => note.id === movingDocument) ?? null : null),
+    [movingDocument, notes],
+  )
 
   if (!folderId) {
     return (
@@ -226,10 +247,10 @@ export default function FolderPage() {
           <Button
             onClick={handleCreateNote}
             className="bg-primary hover:bg-primary/90 text-primary-foreground w-full sm:w-auto"
-            disabled={creatingNote}
+            disabled={loading}
           >
             <Plus className="w-4 h-4 mr-2" />
-            {creatingNote ? "Creating..." : "New Note"}
+            New Note
           </Button>
         </div>
 
@@ -239,21 +260,19 @@ export default function FolderPage() {
         ) : filteredNotes.length > 0 ? (
           <div className="space-y-3">
             {filteredNotes.map((note) => (
-              <Link key={note.id} href={`/dashboard/editor?doc=${note.id}`}>
-                <Card className="bg-card border border-border hover:border-primary hover:shadow-md transition-all cursor-pointer p-4 group">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-foreground group-hover:text-primary transition-colors">
-                        {note.title}
-                      </h3>
-                      <div className="flex gap-4 text-xs text-muted-foreground mt-2">
-                        <span>Created: {formatTimeAgo(note.createdAt)}</span>
-                        <span>Updated: {formatTimeAgo(note.updatedAt)}</span>
-                      </div>
-                    </div>
-                  </div>
-                </Card>
-              </Link>
+              <DocumentCard
+                key={note.id}
+                document={{
+                  id: note.id,
+                  title: note.title,
+                  subtitle: `Created ${formatTimeAgo(note.createdAt)}`,
+                  lastUpdated: note.lastUpdated,
+                }}
+                onView={handleViewDocument}
+                onDelete={handleDeleteDocument}
+                onMove={quickMoveFolders.length ? (id) => setMovingDocument(id) : undefined}
+                onRemoveFromFolder={(id) => handleMoveDocument(id, null)}
+              />
             ))}
           </div>
         ) : (
@@ -262,13 +281,25 @@ export default function FolderPage() {
             <Button
               className="bg-primary hover:bg-primary/90 text-primary-foreground"
               onClick={handleCreateNote}
-              disabled={creatingNote}
             >
-              {creatingNote ? "Creating..." : "Create your first note"}
+              Create your first note
             </Button>
           </div>
         )}
       </div>
+
+      <MoveDocumentDialog
+        open={Boolean(movingDocument)}
+        onOpenChange={(open) => {
+          if (!open) setMovingDocument(null)
+        }}
+        folders={quickMoveFolders}
+        documentTitle={movingDocumentData?.title ?? null}
+        onMove={(folderId) => {
+          if (!movingDocument) return
+          void handleMoveDocument(movingDocument, folderId)
+        }}
+      />
     </div>
   )
 }
